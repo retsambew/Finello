@@ -1,0 +1,29 @@
+## Dependencies
+node_modules/
+
+## Build output
+client/dist/
+
+## Local database (server/data/finello.db + WAL/SHM sidecar files)
+server/data/
+*.db
+*.db-shm
+*.db-wal
+
+## Logs
+*.log
+npm-debug.log*
+
+## Environment
+.env
+.env.local
+
+## Editors / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
+sample-statements
