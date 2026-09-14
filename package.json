@@ -1,0 +1,15 @@
+{
+  "name": "finello",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local monthly finance tracker: import bank/card statements, auto-categorise, export to Expense Tracker format.",
+  "scripts": {
+    "setup": "npm install && npm install --prefix server && npm install --prefix client",
+    "dev": "concurrently -k -n api,web -c green,cyan \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "build": "npm run build --prefix client",
+    "start": "npm run build && npm start --prefix server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
