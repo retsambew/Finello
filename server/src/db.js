@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS rules (
   type TEXT,
   category TEXT,
   description TEXT,
+  details TEXT,
   ignore INTEGER NOT NULL DEFAULT 0,
   priority INTEGER NOT NULL DEFAULT 10,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   narration TEXT,
   direction TEXT NOT NULL,
   source_file TEXT,
+  file_seq INTEGER NOT NULL DEFAULT 0,
   fingerprint TEXT NOT NULL,
   include_row INTEGER NOT NULL DEFAULT 1,
   is_duplicate INTEGER NOT NULL DEFAULT 0,
@@ -75,6 +77,21 @@ CREATE INDEX IF NOT EXISTS idx_txn_fingerprint ON transactions(fingerprint, stat
 CREATE INDEX IF NOT EXISTS idx_txn_batch ON transactions(batch_id);
 CREATE INDEX IF NOT EXISTS idx_txn_date ON transactions(date);
 `);
+
+// Additive migration for databases created before `rules.details` existed —
+// CREATE TABLE IF NOT EXISTS above only applies to brand-new installs.
+const ruleColumns = db.prepare('PRAGMA table_info(rules)').all().map((c) => c.name);
+if (!ruleColumns.includes('details')) {
+  db.exec('ALTER TABLE rules ADD COLUMN details TEXT');
+}
+
+// Additive migration for databases created before `transactions.file_seq`
+// existed (disambiguates multiple same-named files uploaded in one batch —
+// see markDuplicates in imports.js).
+const txnColumns = db.prepare('PRAGMA table_info(transactions)').all().map((c) => c.name);
+if (!txnColumns.includes('file_seq')) {
+  db.exec('ALTER TABLE transactions ADD COLUMN file_seq INTEGER NOT NULL DEFAULT 0');
+}
 
 seedDatabase(db);
 

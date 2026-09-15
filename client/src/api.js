@@ -8,7 +8,11 @@ async function request(method, url, body) {
   }
   const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    if (data.errors) err.errors = data.errors;
+    throw err;
+  }
   return data;
 }
 
@@ -17,7 +21,7 @@ export const api = {
   post: (url, body) => request('POST', url, body ?? {}),
   put: (url, body) => request('PUT', url, body),
   patch: (url, body) => request('PATCH', url, body),
-  del: (url) => request('DELETE', url),
+  del: (url, body) => request('DELETE', url, body),
 };
 
 export const inr = (n) =>

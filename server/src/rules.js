@@ -46,6 +46,7 @@ function applyRules(rules, txn) {
       type: rule.type || (txn.direction === 'credit' ? 'Income' : 'Expense'),
       category: rule.category || (txn.direction === 'credit' ? 'Credit' : ''),
       description: rule.description || suggestDescription(txn.narration),
+      details: rule.details || '',
       include_row: rule.ignore ? 0 : 1,
       auto_mapped: 1,
     };
@@ -54,6 +55,7 @@ function applyRules(rules, txn) {
     type: txn.direction === 'credit' ? 'Income' : 'Expense',
     category: txn.direction === 'credit' ? 'Credit' : '',
     description: suggestDescription(txn.narration),
+    details: '',
     include_row: 1,
     auto_mapped: 0,
   };

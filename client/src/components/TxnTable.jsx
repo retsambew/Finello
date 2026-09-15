@@ -1,30 +1,6 @@
 import { api, fmtDate, inr } from '../api.js';
 import ComboInput from './ComboInput.jsx';
 
-export function MetaDatalists({ meta }) {
-  return (
-    <>
-      <datalist id="dl-accounts">
-        {meta.accounts.map((a) => <option key={a.id} value={a.name} />)}
-      </datalist>
-      <datalist id="dl-types">
-        {meta.types.map((t) => <option key={t} value={t} />)}
-      </datalist>
-      <datalist id="dl-descriptions">
-        {meta.descriptions.map((d) => <option key={d} value={d} />)}
-      </datalist>
-      {meta.types.map((t) => (
-        <datalist key={t} id={`dl-cat-${t}`}>
-          {meta.categories.filter((c) => c.type === t).map((c) => <option key={c.id} value={c.name} />)}
-        </datalist>
-      ))}
-      <datalist id="dl-cat-all">
-        {[...new Set(meta.categories.map((c) => c.name))].map((n) => <option key={n} value={n} />)}
-      </datalist>
-    </>
-  );
-}
-
 export default function TxnTable({ rows, meta, reloadMeta, onPatch, selected, onToggle, onToggleAll, staged, onDelete }) {
   const categoriesFor = (type) => meta.categories.filter((c) => c.type === type).map((c) => c.name);
   const tagFor = (type, category) => meta.categories.find((c) => c.type === type && c.name === category)?.tag || '';
@@ -60,8 +36,8 @@ export default function TxnTable({ rows, meta, reloadMeta, onPatch, selected, on
             <th>Type</th>
             <th>Category</th>
             <th>Tag</th>
+            <th>Sub category</th>
             <th>Description</th>
-            <th>More details</th>
             <th>Statement narration</th>
             {!staged && <th />}
           </tr>
@@ -102,7 +78,6 @@ export default function TxnTable({ rows, meta, reloadMeta, onPatch, selected, on
                   <ComboInput
                     value={r.account}
                     options={meta.accounts.map((a) => a.name)}
-                    listId="dl-accounts"
                     invalid={!r.account}
                     onCreate={createAccount}
                     onCommit={(v) => onPatch(r, { account: v })}
@@ -117,7 +92,6 @@ export default function TxnTable({ rows, meta, reloadMeta, onPatch, selected, on
                   <ComboInput
                     value={r.type}
                     options={meta.types}
-                    listId="dl-types"
                     onCreate={createType}
                     onCommit={(v) => onPatch(r, { type: v })}
                     className="w-type"
@@ -127,7 +101,6 @@ export default function TxnTable({ rows, meta, reloadMeta, onPatch, selected, on
                   <ComboInput
                     value={r.category}
                     options={categoriesFor(r.type)}
-                    listId={meta.types.includes(r.type) ? `dl-cat-${r.type}` : 'dl-cat-all'}
                     invalid={catMissing}
                     placeholder="Pick or add…"
                     onCreate={(v) => createCategory(r.type, v)}
@@ -142,7 +115,6 @@ export default function TxnTable({ rows, meta, reloadMeta, onPatch, selected, on
                   <ComboInput
                     value={r.description}
                     options={meta.descriptions}
-                    listId="dl-descriptions"
                     onCommit={(v) => onPatch(r, { description: v })}
                     className="w-desc"
                   />

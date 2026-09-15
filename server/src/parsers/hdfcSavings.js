@@ -32,12 +32,20 @@ function parse(buffer, { filename } = {}) {
     const row = rows[r];
     const dateRaw = row[dateCol];
     const dateParts = parseDDMMYY(dateRaw);
-    if (!dateParts) continue; // skip separators / footer rows
+    if (!dateParts) continue; // skip separators / footer rows (they have no date at all)
     const narration = String(row[narrationCol] || '').trim();
     const withdrawal = parseAmount(row[withdrawCol]);
     const deposit = parseAmount(row[depositCol]);
     const balance = parseAmount(row[balanceCol]);
-    if (withdrawal === null && deposit === null) continue;
+    // A row with a real date but no parseable amount/balance is not a normal
+    // separator row (those have no date either) — it's a transaction we
+    // failed to read correctly. Never drop it silently.
+    if (withdrawal === null && deposit === null) {
+      throw new Error(`Row ${r + 1}: found a dated transaction ("${narration}") but couldn't read an amount from it — refusing to import, statement format may have changed`);
+    }
+    if (balance === null) {
+      throw new Error(`Row ${r + 1}: found a dated transaction ("${narration}") but couldn't read its Closing Balance — refusing to import, statement format may have changed`);
+    }
 
     const isCredit = deposit !== null;
     transactions.push({
@@ -48,9 +56,30 @@ function parse(buffer, { filename } = {}) {
       balanceAfter: balance,
       sourceFile: filename,
       accountHint: { kind: 'bank', label: 'Savings' },
+      _row: r + 1,
     });
   }
+
+  verifyBalanceChain(transactions);
   return transactions;
+}
+
+// Every row carries the bank's own running Closing Balance, so unlike a
+// credit-card statement (which only prints an aggregate total), we can check
+// EVERY transaction, not just the sum: if any row was missed, duplicated, or
+// misparsed (wrong amount/direction), the chain breaks at that exact row.
+function verifyBalanceChain(transactions) {
+  for (let i = 1; i < transactions.length; i++) {
+    const prev = transactions[i - 1];
+    const cur = transactions[i];
+    const signedAmount = cur.direction === 'credit' ? cur.amount : -cur.amount;
+    const expected = prev.balanceAfter + signedAmount;
+    if (Math.abs(expected - cur.balanceAfter) > 0.01) {
+      throw new Error(
+        `Row ${cur._row}: running balance doesn't add up (expected ₹${expected.toFixed(2)} after "${cur.narration}" on ${cur.date}, statement shows ₹${cur.balanceAfter.toFixed(2)}) — a transaction may have been missed or misread, refusing to import`
+      );
+    }
+  }
 }
 
 module.exports = { detect, parse };
