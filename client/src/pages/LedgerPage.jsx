@@ -1,19 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, inr } from '../api.js';
-import TxnTable, { MetaDatalists } from '../components/TxnTable.jsx';
+import TxnTable from '../components/TxnTable.jsx';
 import { useToast } from '../components/Toast.jsx';
-import { ImportLedgerButton, ResetLedgerButton } from '../components/LedgerActions.jsx';
+import { ImportLedgerButton } from '../components/LedgerActions.jsx';
+import Modal from '../components/Modal.jsx';
+import DateRangePicker, { defaultRange } from '../components/DateRangePicker.jsx';
+import Select from '../components/Select.jsx';
+import ComboInput from '../components/ComboInput.jsx';
+
+// Recreates a deleted transaction well enough for Undo — same date/account/type/category/
+// amount/sub category/description. The statement narration and original fingerprint don't
+// carry over (there's no "restore" endpoint, just the manual-entry one), which is fine for
+// putting a mistakenly-deleted row back but not a byte-for-byte restore.
+const restoreTxn = (row) => api.post('/api/transactions', row);
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const lastDay = (ym) => {
-  const [y, m] = ym.split('-').map(Number);
-  return `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
-};
 
 export default function LedgerPage({ meta, reloadMeta }) {
   const [months, setMonths] = useState([]);
-  const [filters, setFilters] = useState({ from: '', to: '', account: '', type: '', category: '', q: '' });
-  const [period, setPeriod] = useState('');
+  const [filters, setFilters] = useState({ ...defaultRange(), account: '', type: '', category: '', q: '' });
   const [rows, setRows] = useState([]);
   const [selected, setSelected] = useState(new Set());
   const [adding, setAdding] = useState(false);
@@ -23,9 +28,8 @@ export default function LedgerPage({ meta, reloadMeta }) {
   const load = useCallback(() => api.get(`/api/transactions?${query}`).then(setRows), [query]);
   const loadMonths = useCallback(() => api.get('/api/months').then((m) => {
     setMonths(m);
-    if (m.length && !period) choosePeriod(m[0]);
     return m;
-  }), [period]);
+  }), []);
 
   const refreshAll = () => {
     loadMonths();
@@ -40,12 +44,6 @@ export default function LedgerPage({ meta, reloadMeta }) {
   useEffect(() => {
     load();
   }, [load]);
-
-  function choosePeriod(value) {
-    setPeriod(value);
-    if (!value) setFilters((f) => ({ ...f, from: '', to: '' }));
-    else if (value !== 'custom') setFilters((f) => ({ ...f, from: `${value}-01`, to: lastDay(value) }));
-  }
 
   const summary = useMemo(() => {
     const byType = {};
@@ -73,13 +71,22 @@ export default function LedgerPage({ meta, reloadMeta }) {
     if (!window.confirm(`Delete "${row.description || row.narration}" (${inr(row.amount)})?`)) return;
     await api.del(`/api/transactions/${row.id}`);
     load();
+    toast(`Deleted "${row.description || row.narration}"`, 'success', {
+      label: 'Undo',
+      onClick: async () => { await restoreTxn(row); load(); },
+    });
   };
 
   const bulkDelete = async () => {
+    const deleted = rows.filter((r) => selected.has(r.id));
     if (!window.confirm(`Delete ${selected.size} selected transaction(s)?`)) return;
     await api.post('/api/transactions/bulk', { ids: [...selected], action: 'delete' });
     setSelected(new Set());
     load();
+    toast(`Deleted ${deleted.length} transaction(s)`, 'success', {
+      label: 'Undo',
+      onClick: async () => { await Promise.all(deleted.map(restoreTxn)); load(); },
+    });
   };
 
   const copyForExcel = async () => {
@@ -97,7 +104,6 @@ export default function LedgerPage({ meta, reloadMeta }) {
 
   return (
     <div className="page">
-      <MetaDatalists meta={meta} />
       {months.length === 0 && (
         <div className="card">
           <h3>Your ledger is empty</h3>
@@ -118,40 +124,29 @@ export default function LedgerPage({ meta, reloadMeta }) {
             Download .xlsx
           </a>
           <ImportLedgerButton onImported={refreshAll} />
-          <ResetLedgerButton onReset={refreshAll} />
         </div>
       </div>
 
       <div className="toolbar">
-        <select value={period} onChange={(e) => choosePeriod(e.target.value)}>
-          <option value="">All time</option>
-          {months.map((m) => {
-            const [y, mo] = m.split('-');
-            return <option key={m} value={m}>{MONTHS[+mo - 1]} {y}</option>;
-          })}
-          <option value="custom">Custom range…</option>
-        </select>
-        {period === 'custom' && (
-          <>
-            <input type="date" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })} />
-            <span className="muted">to</span>
-            <input type="date" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })} />
-          </>
-        )}
-        <select value={filters.account} onChange={(e) => setFilters({ ...filters, account: e.target.value })}>
+        <DateRangePicker
+          from={filters.from}
+          to={filters.to}
+          onChange={(range) => setFilters({ ...filters, ...range })}
+        />
+        <Select value={filters.account} onChange={(e) => setFilters({ ...filters, account: e.target.value })}>
           <option value="">All accounts</option>
           {meta.accounts.map((a) => <option key={a.id}>{a.name}</option>)}
-        </select>
-        <select value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value, category: '' })}>
+        </Select>
+        <Select value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value, category: '' })}>
           <option value="">All types</option>
           {meta.types.map((t) => <option key={t}>{t}</option>)}
-        </select>
-        <select value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })}>
+        </Select>
+        <Select value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })}>
           <option value="">All categories</option>
           {meta.categories.filter((c) => !filters.type || c.type === filters.type).map((c) => (
             <option key={c.id} value={c.name}>{c.name}</option>
           ))}
-        </select>
+        </Select>
         <input className="search" placeholder="Search…" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} />
       </div>
 
@@ -168,7 +163,7 @@ export default function LedgerPage({ meta, reloadMeta }) {
           <h3>Expenses by category</h3>
           {summary.cats.map(([cat, amt]) => (
             <div key={cat} className="bar-row">
-              <span className="bar-label">{cat || 'Uncategorised'}</span>
+              <span className="bar-label" title={cat || 'Uncategorised'}>{cat || 'Uncategorised'}</span>
               <span className="bar-track">
                 <span className="bar-fill" style={{ width: `${(amt / summary.max) * 100}%` }} />
               </span>
@@ -233,6 +228,7 @@ function ManualEntry({ meta, onClose, onSaved }) {
   });
   const [error, setError] = useState('');
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const setField = (k) => (v) => setForm({ ...form, [k]: v });
 
   const save = async () => {
     try {
@@ -247,24 +243,35 @@ function ManualEntry({ meta, onClose, onSaved }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Manual entry</h2>
-        <div className="form-grid">
-          <label>Date<input type="date" value={form.date} onChange={set('date')} /></label>
-          <label>Account<input list="dl-accounts" value={form.account} onChange={set('account')} /></label>
-          <label>Type<input list="dl-types" value={form.type} onChange={set('type')} /></label>
-          <label>Category<input list={`dl-cat-${form.type}`} value={form.category} onChange={set('category')} /></label>
-          <label>Amount (₹)<input type="number" min="0" step="0.01" value={form.amount} onChange={set('amount')} /></label>
-          <label>Description<input list="dl-descriptions" value={form.description} onChange={set('description')} /></label>
-          <label className="span-2">More details<input value={form.details} onChange={set('details')} /></label>
-        </div>
-        {error && <p className="error">{error}</p>}
-        <div className="modal-actions">
-          <button className="btn ghost" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={save}>Save</button>
-        </div>
+    <Modal onClose={onClose} onSubmit={save}>
+      <h2>Manual entry</h2>
+      <div className="form-grid">
+        {/* eslint-disable-next-line jsx-a11y/no-autofocus -- opening the modal should put you straight into the first field */}
+        <label>Date<input autoFocus type="date" value={form.date} onChange={set('date')} /></label>
+        <label>Account
+          <ComboInput value={form.account} options={meta.accounts.map((a) => a.name)} onCommit={setField('account')} />
+        </label>
+        <label>Type
+          <ComboInput value={form.type} options={meta.types} onCommit={setField('type')} />
+        </label>
+        <label>Category
+          <ComboInput
+            value={form.category}
+            options={meta.categories.filter((c) => c.type === form.type).map((c) => c.name)}
+            onCommit={setField('category')}
+          />
+        </label>
+        <label>Amount (₹)<input type="number" min="0" step="0.01" value={form.amount} onChange={set('amount')} /></label>
+        <label>Sub category
+          <ComboInput value={form.description} options={meta.descriptions} onCommit={setField('description')} />
+        </label>
+        <label className="span-2">Description<input value={form.details} onChange={set('details')} /></label>
       </div>
-    </div>
+      {error && <p className="error">{error}</p>}
+      <div className="modal-actions">
+        <button className="btn ghost" onClick={onClose}>Cancel</button>
+        <button className="btn primary" onClick={save}>Save</button>
+      </div>
+    </Modal>
   );
 }

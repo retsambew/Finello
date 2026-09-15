@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, inr } from '../api.js';
-import TxnTable, { MetaDatalists } from '../components/TxnTable.jsx';
+import TxnTable from '../components/TxnTable.jsx';
 import ComboInput from '../components/ComboInput.jsx';
 import { useToast } from '../components/Toast.jsx';
+import Switch from '../components/Switch.jsx';
+import Modal from '../components/Modal.jsx';
 
 const FILTERS = [
   ['all', 'All'],
@@ -20,6 +22,8 @@ export default function ReviewPage({ batchId, meta, reloadMeta, onPickBatch, onD
   const [remember, setRemember] = useState(true);
   const [dupDecided, setDupDecided] = useState(false);
   const [bulk, setBulk] = useState({ type: '', category: '' });
+  const [showDiscardModal, setShowDiscardModal] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   const toast = useToast();
 
   const load = useCallback(async () => {
@@ -43,7 +47,7 @@ export default function ReviewPage({ batchId, meta, reloadMeta, onPickBatch, onD
       if (filter === 'review' && r.auto_mapped) return false;
       if (filter === 'dup' && !r.is_duplicate) return false;
       if (filter === 'excluded' && r.include_row) return false;
-      if (q && ![r.narration, r.description, r.category, r.account].some((v) => v?.toLowerCase().includes(q))) return false;
+      if (q && ![r.narration, r.description, r.details, r.category, r.account].some((v) => v?.toLowerCase().includes(q))) return false;
       return true;
     });
   }, [batch, filter, search]);
@@ -129,9 +133,14 @@ export default function ReviewPage({ batchId, meta, reloadMeta, onPickBatch, onD
   };
 
   const discard = async () => {
-    if (!window.confirm('Discard this whole import? Nothing from it will be saved.')) return;
-    await api.del(`/api/imports/${batchId}`);
-    onDone();
+    setDiscarding(true);
+    try {
+      await api.del(`/api/imports/${batchId}`);
+      onDone();
+    } catch (e) {
+      toast(e.message, 'error');
+      setDiscarding(false);
+    }
   };
 
   const showAccountModal = batch.unmappedAccounts.length > 0;
@@ -139,10 +148,23 @@ export default function ReviewPage({ batchId, meta, reloadMeta, onPickBatch, onD
 
   return (
     <div className="page">
-      <MetaDatalists meta={meta} />
-
       {showAccountModal && (
         <AccountModal accounts={meta.accounts} unmapped={batch.unmappedAccounts} onMap={mapAccount} />
+      )}
+      {showDiscardModal && (
+        <Modal onClose={() => !discarding && setShowDiscardModal(false)} onSubmit={() => !discarding && discard()}>
+          <h2>Discard import #{batch.id}?</h2>
+          <p>
+            This removes all <strong>{batch.rows.length}</strong> row(s) from this import. Nothing from it will be
+            saved to your ledger — this cannot be undone.
+          </p>
+          <div className="modal-actions">
+            <button className="btn ghost" disabled={discarding} onClick={() => setShowDiscardModal(false)}>Cancel</button>
+            <button className="btn danger" disabled={discarding} onClick={discard}>
+              {discarding ? 'Discarding…' : 'Discard import'}
+            </button>
+          </div>
+        </Modal>
       )}
       {showDupModal && (
         <div className="modal-backdrop">
@@ -174,7 +196,7 @@ export default function ReviewPage({ batchId, meta, reloadMeta, onPickBatch, onD
           <p className="muted small">{batch.files.map((f) => `${f.file} (${f.count})`).join(' · ')}</p>
         </div>
         <div className="head-actions">
-          <button className="btn ghost" onClick={discard}>Discard import</button>
+          <button className="btn ghost" onClick={() => setShowDiscardModal(true)}>Discard import</button>
           <button className="btn primary" onClick={commit} disabled={incomplete > 0} title={incomplete ? `${incomplete} row(s) need account/type/category` : ''}>
             Save {included.length} to ledger
           </button>
@@ -191,7 +213,7 @@ export default function ReviewPage({ batchId, meta, reloadMeta, onPickBatch, onD
         <Stat label="Investment" value={inr(totals.Investment)} />
       </div>
 
-      <div className="toolbar">
+      <div className="toolbar sticky">
         <div className="chips">
           {FILTERS.map(([k, label]) => (
             <button key={k} className={filter === k ? 'chip active' : 'chip'} onClick={() => setFilter(k)}>
@@ -199,10 +221,14 @@ export default function ReviewPage({ batchId, meta, reloadMeta, onPickBatch, onD
             </button>
           ))}
         </div>
-        <input className="search" placeholder="Search narration, description…" value={search} onChange={(e) => setSearch(e.target.value)} />
-        <label className="toggle" title="When you set a category on an unmapped merchant, save it as an auto-mapping rule for future imports">
-          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> Remember my mappings
-        </label>
+        <input className="search" placeholder="Search narration, sub category, description…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <Switch
+          className="right"
+          checked={remember}
+          onChange={setRemember}
+          label="Remember my mappings"
+          title="When you set a category on an unmapped merchant, save it as an auto-mapping rule for future imports"
+        />
       </div>
 
       <div className="toolbar secondary">
@@ -223,10 +249,10 @@ export default function ReviewPage({ batchId, meta, reloadMeta, onPickBatch, onD
             <strong>{selected.size} selected</strong>
             <button className="btn small" onClick={() => bulkAction('update', { include_row: true })}>Include</button>
             <button className="btn small" onClick={() => bulkAction('update', { include_row: false })}>Exclude</button>
-            <ComboInput value={bulk.type} options={meta.types} listId="dl-types" placeholder="Type" className="w-type"
+            <ComboInput value={bulk.type} options={meta.types} placeholder="Type" className="w-type"
               onCommit={(v) => setBulk({ ...bulk, type: v })} />
             <ComboInput value={bulk.category} options={meta.categories.filter((c) => c.type === bulk.type).map((c) => c.name)}
-              listId={bulk.type ? `dl-cat-${bulk.type}` : 'dl-cat-all'} placeholder="Category" className="w-category"
+              placeholder="Category" className="w-category"
               onCommit={(v) => setBulk({ ...bulk, category: v })} />
             <button className="btn small" disabled={!bulk.type || !bulk.category}
               onClick={() => bulkAction('update', { type: bulk.type, category: bulk.category })}>
@@ -283,7 +309,6 @@ function AccountModal({ accounts, unmapped, onMap }) {
               <ComboInput
                 value={names[u.identifier]}
                 options={accounts.map((a) => a.name)}
-                listId="dl-accounts"
                 onCommit={(v) => setNames({ ...names, [u.identifier]: v })}
               />
               <button className="btn primary" onClick={() => onMap(u.identifier, names[u.identifier])}>Save</button>

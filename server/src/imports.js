@@ -42,50 +42,62 @@ async function createBatch(files) {
 
     const insert = db.prepare(`
       INSERT INTO transactions (batch_id, account, account_identifier, date, month, type, category, amount,
-        description, narration, direction, source_file, fingerprint, include_row, auto_mapped)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        description, details, narration, direction, source_file, file_seq, fingerprint, include_row, auto_mapped)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
-    for (const p of parsed) {
+    // file_seq (this file's position among the files in this upload) is the
+    // "same physical file" key for dedup purposes — not source_file, which
+    // would collapse two identically-named files attached to one upload into
+    // a single bucket and hide real duplicates (see markDuplicates below).
+    parsed.forEach((p, fileSeq) => {
       for (const t of p.transactions) {
         const identifier = accountIdentifier(t.accountHint, p.type);
         const mapped = applyRules(rules, t);
         insert.run(
           lastInsertRowid, accountByIdentifier[identifier] || null, identifier, t.date, monthName(t.date),
-          mapped.type, mapped.category, t.amount, mapped.description, t.narration, t.direction, p.file,
-          fingerprint(identifier, t), mapped.include_row, mapped.auto_mapped
+          mapped.type, mapped.category, t.amount, mapped.description, mapped.details, t.narration, t.direction, p.file,
+          fileSeq, fingerprint(identifier, t), mapped.include_row, mapped.auto_mapped
         );
       }
-    }
+    });
     return Number(lastInsertRowid);
   });
 
-  markDuplicates(batchId);
   return { batchId, errors };
 }
 
 // Count-aware duplicate detection: two identical HungerBox ₹18 charges on the
 // same day in one statement are real, but the same row appearing again from an
 // earlier import (or a second copy of the file in this upload) is a duplicate.
+// Re-run on every getBatch() call (not just once at upload time) so that two
+// statements imported back-to-back, before either is committed, still catch
+// each other — and so a batch's flags stay current if other batches are
+// committed/discarded/edited while this one sits in review.
 function markDuplicates(batchId) {
-  const rows = db.prepare('SELECT id, fingerprint, source_file FROM transactions WHERE batch_id = ? ORDER BY id').all(batchId);
+  const rows = db.prepare("SELECT id, fingerprint, file_seq FROM transactions WHERE batch_id = ? AND status = 'staged' ORDER BY id").all(batchId);
   const groups = new Map();
   for (const r of rows) {
     if (!groups.has(r.fingerprint)) groups.set(r.fingerprint, []);
     groups.get(r.fingerprint).push(r);
   }
-  const countCommitted = db.prepare("SELECT COUNT(*) AS n FROM transactions WHERE fingerprint = ? AND status IN ('committed', 'ignored')");
+  // Any row with the same fingerprint outside this batch counts as "already
+  // accounted for" — whether it's committed, ignored, or simply staged in a
+  // different (not-yet-committed) import.
+  const countElsewhere = db.prepare('SELECT COUNT(*) AS n FROM transactions WHERE fingerprint = ? AND (batch_id IS NULL OR batch_id != ?)');
+  const reset = db.prepare("UPDATE transactions SET is_duplicate = 0, duplicate_reason = NULL WHERE batch_id = ? AND status = 'staged'");
   const mark = db.prepare('UPDATE transactions SET is_duplicate = 1, duplicate_reason = ? WHERE id = ?');
 
   transaction(() => {
+    reset.run(batchId);
     for (const [fp, group] of groups) {
       const perFile = {};
-      for (const r of group) perFile[r.source_file] = (perFile[r.source_file] || 0) + 1;
+      for (const r of group) perFile[r.file_seq] = (perFile[r.file_seq] || 0) + 1;
       const maxPerFile = Math.max(...Object.values(perFile));
-      const committed = countCommitted.get(fp).n;
-      const genuine = Math.max(maxPerFile - committed, 0);
+      const elsewhere = countElsewhere.get(fp, batchId).n;
+      const genuine = Math.max(maxPerFile - elsewhere, 0);
       const dupCount = group.length - genuine;
       if (dupCount <= 0) continue;
-      const reason = committed > 0 ? 'Already imported earlier' : 'Also present in another uploaded file';
+      const reason = elsewhere > 0 ? 'Already imported earlier' : 'Also present in another uploaded file';
       for (const r of group.slice(group.length - dupCount)) mark.run(reason, r.id);
     }
   });
@@ -94,6 +106,7 @@ function markDuplicates(batchId) {
 function getBatch(batchId) {
   const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(batchId);
   if (!batch) return null;
+  if (batch.status === 'staged') markDuplicates(batchId);
   const rows = db.prepare('SELECT * FROM transactions WHERE batch_id = ? ORDER BY date, id').all(batchId);
   const unmapped = db.prepare(`
     SELECT account_identifier AS identifier, COUNT(*) AS count, MIN(source_file) AS file

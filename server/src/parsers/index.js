@@ -1,6 +1,7 @@
 const path = require('path');
 const hdfcSavings = require('./hdfcSavings');
 const hdfcCard = require('./hdfcCard');
+const hdfcCardPdf = require('./hdfcCardPdf');
 const sbiCardPdf = require('./sbiCardPdf');
 const { loadSheetAsRows } = require('./xlsUtils');
 
@@ -10,6 +11,9 @@ async function parseFile(buffer, filename) {
   if (ext === '.pdf') {
     if (await sbiCardPdf.detect(buffer)) {
       return { type: 'sbi_card_pdf', transactions: await sbiCardPdf.parse(buffer, { filename }) };
+    }
+    if (await hdfcCardPdf.detect(buffer)) {
+      return { type: 'hdfc_card_pdf', transactions: await hdfcCardPdf.parse(buffer, { filename }) };
     }
     throw new Error(`Unrecognized PDF format: ${filename}`);
   }

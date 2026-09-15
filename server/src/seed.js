@@ -2,63 +2,68 @@ const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
 
-const TRACKER_PATH = path.join(__dirname, '..', '..', 'Expense Tracker.xlsx');
+// `sample-statements/` is the git-ignored drop folder for your own local files (statements
+// to test against, and optionally your existing tracker workbook) — never part of the repo.
+const TRACKER_PATH = path.join(__dirname, '..', '..', 'sample-statements', 'Expense Tracker.xlsx');
 
+// Deliberately minimal — one category per type so no dropdown starts empty, and only
+// the broadest, near-universal Expense buckets. Finer distinctions (groceries vs. food
+// delivery, recharge vs. electricity) belong one level down, in the "Sub category"
+// field via DEFAULT_RULES below — that's the level meant to grow, not this one. This
+// is a starting point to edit in Settings, not a template to fill out; a long list of
+// someone else's personal categories (their gym, their hobby, their specific bills) is
+// never right for a new install. The three-level hierarchy is: `category` (broad
+// bucket, e.g. "Utilities"), then the "Sub category" field (medium, e.g. "Recharge"),
+// then the free-text "Description" field (specific, e.g. "Airtel").
 const DEFAULT_CATEGORIES = [
-  ['Income', 'Salary', null], ['Income', 'Tax Returns', null], ['Income', 'Cashback', null],
-  ['Income', 'Credit', null], ['Income', 'Dividend', null], ['Income', 'Interest', null],
-  ['Expense', 'Rent', 'Need'], ['Expense', 'Groceries', 'Need'], ['Expense', 'Utilities', 'Need'],
-  ['Expense', 'Clothes', 'Want'], ['Expense', 'Recharge', 'Want'], ['Expense', 'Gift', 'Need'],
-  ['Expense', 'Cash Withdraw', 'Need'], ['Expense', 'Charity', 'Need'], ['Expense', 'Transport', 'Need'],
-  ['Expense', 'Food', 'Need'], ['Expense', 'Dine Out', 'Want'], ['Expense', 'Shopping', 'Want'],
-  ['Expense', 'Travel', 'Want'], ['Expense', 'Drinks', 'Want'], ['Expense', 'Games', 'Want'],
-  ['Expense', 'Home', 'Need'], ['Expense', 'Panda', 'Need'], ['Expense', 'Medical', 'Need'],
-  ['Expense', 'Wedding', 'Need'], ['Expense', 'Activities', 'Want'], ['Expense', 'Fee', 'Need'],
-  ['Investment', 'Mutual Fund', null], ['Investment', 'Equity', null], ['Investment', 'SGB', null],
-  ['CC Bill', 'CC Bill', null], ['Exchange', 'Ex Credit', null], ['Exchange', 'Ex Debit', null],
+  ['Income', 'Salary', null], ['Income', 'Other Income', null],
+  ['Expense', 'Food', 'Need'], ['Expense', 'Utilities', 'Need'], ['Expense', 'Transport', 'Need'],
+  ['Expense', 'Shopping', 'Want'], ['Expense', 'Health', 'Need'], ['Expense', 'Housing', 'Need'],
+  ['Expense', 'Other', null],
+  ['Investment', 'Investments', null],
+  ['CC Bill', 'CC Bill', null], ['Exchange', 'Exchange', null],
 ];
 
+// Accounts tied to a specific bank or card (identifier `hdfc_savings`, `card:XXXX`, ...)
+// aren't seeded here — that identifier only matches if it happens to equal the hint
+// parsed from someone's real statement, so a hardcoded one is never right for a new
+// install. The Review page already prompts to name a new account the first time its
+// identifier shows up in an import, which is the only place that naming can actually
+// be correct. "Cash" has no identifier since it never comes from a parsed statement.
 const DEFAULT_ACCOUNTS = [
   ['Savings', 'hdfc_savings'],
-  ['Neu Card', 'card:3657'],
-  ['Swiggy Card', 'card:7439'],
   ['Cash', null],
 ];
 
 // [pattern, direction, type, category, description, ignore, priority]
+// `description` here is the "Sub category" field — a medium-specificity bucket
+// (e.g. "Recharge", "Food Delivery"), not the merchant name itself. The merchant name
+// belongs in the transaction's "Description" field (the `details` column), which is
+// left blank here since it's specific to each transaction, not to the merchant pattern
+// — see the Category vs. subcategory gotcha in CLAUDE.md. These patterns are widely
+// recognizable (major Indian food/grocery-delivery, e-commerce, and telecom brands) so
+// they're useful out of the box without encoding any one person's habits.
 const DEFAULT_RULES = [
   ['PAYMENT RECEIVED', 'credit', null, null, 'Card bill payment', 1, 100],
   ['TELE TRANSFER CREDIT', 'credit', null, null, 'Card bill payment', 1, 100],
-  ['CASHBACK', 'credit', 'Income', 'Cashback', 'Cashback', 0, 90],
-  ['REWARD POINT REDEMPTION', 'credit', 'Income', 'Cashback', 'Reward Points', 0, 90],
-  ['FUEL SURCHARGE WAIVER', 'credit', 'Income', 'Cashback', 'Fuel Surcharge Waiver', 0, 90],
-  ['UPIRET', 'credit', 'Income', 'Credit', 'UPI Refund', 0, 80],
-  ['INSTAMART', null, 'Expense', 'Groceries', 'Instamart', 0, 50],
-  ['HUNGERBOX', null, 'Expense', 'Food', 'HungerBox', 0, 50],
-  ['BLINKIT', null, 'Expense', 'Groceries', 'Blinkit', 0, 50],
-  ['ZEPTO', null, 'Expense', 'Groceries', 'Zepto', 0, 50],
-  ['BIGBASKET', null, 'Expense', 'Groceries', 'BigBasket', 0, 50],
-  ['ZOMATO', 'debit', 'Expense', 'Food', 'Zomato', 0, 40],
-  ['SWIGGY', 'debit', 'Expense', 'Food', 'Swiggy', 0, 30],
-  ['AMAZON', 'debit', 'Expense', 'Shopping', 'Amazon', 0, 30],
-  ['MAKEMYTRIP', 'debit', 'Expense', 'Travel', 'MakeMyTrip', 0, 30],
-  ['REDBUS', 'debit', 'Expense', 'Travel', 'Bus', 0, 30],
-  ['CONFIRM TICKET', 'debit', 'Expense', 'Travel', 'Train', 0, 30],
-  ['IRCTC', 'debit', 'Expense', 'Travel', 'IRCTC', 0, 30],
-  ['AIRBNB', 'debit', 'Expense', 'Travel', 'Airbnb', 0, 30],
-  ['AIRTEL', 'debit', 'Expense', 'Recharge', 'Airtel Recharge', 0, 30],
-  ['VODAFONE IDEA', 'debit', 'Expense', 'Recharge', 'Vi Recharge', 0, 30],
-  ['GPAYRECHARGE', 'debit', 'Expense', 'Recharge', 'Mobile Recharge', 0, 30],
-  ['CRED CLUB', 'debit', 'CC Bill', 'CC Bill', 'CRED', 0, 60],
-  ['ZERODHA', 'debit', 'Investment', 'Equity', 'Zerodha', 0, 30],
-  ['INDIAN CLEARING CORP', 'debit', 'Investment', 'Mutual Fund', 'Mutual Fund SIP', 0, 30],
-  ['ANNUAL FEE', 'debit', 'Expense', 'Fee', 'Debit Card Annual Charge', 0, 30],
-  ['INSTAALERTCHG', 'debit', 'Expense', 'Fee', 'SMS Alert Charges', 0, 30],
-  ['PHARMACY', 'debit', 'Expense', 'Medical', 'Pharmacy', 0, 20],
-  ['MEDICAL', 'debit', 'Expense', 'Medical', 'Medical Store', 0, 20],
-  ['PETROL PUMP', 'debit', 'Expense', 'Transport', 'Petrol', 0, 20],
-  ['SERVICE STATION', 'debit', 'Expense', 'Transport', 'Petrol', 0, 20],
-  ['VALVE CORPORATION', 'debit', 'Expense', 'Games', 'Steam', 0, 20],
+  ['CASHBACK', 'credit', 'Income', 'Other Income', 'Cashback', 0, 90],
+  ['REFUND', 'credit', 'Income', 'Other Income', 'Refund', 0, 80],
+  ['SWIGGY', 'debit', 'Expense', 'Food', 'Food Delivery', 0, 30],
+  ['ZOMATO', 'debit', 'Expense', 'Food', 'Food Delivery', 0, 30],
+  ['INSTAMART', null, 'Expense', 'Food', 'Groceries', 0, 30],
+  ['BLINKIT', null, 'Expense', 'Food', 'Groceries', 0, 30],
+  ['ZEPTO', null, 'Expense', 'Food', 'Groceries', 0, 30],
+  ['BIGBASKET', null, 'Expense', 'Food', 'Groceries', 0, 30],
+  ['AMAZON', 'debit', 'Expense', 'Shopping', 'Online Shopping', 0, 30],
+  ['FLIPKART', 'debit', 'Expense', 'Shopping', 'Online Shopping', 0, 30],
+  ['AIRTEL', 'debit', 'Expense', 'Utilities', 'Recharge', 0, 30],
+  ['JIO', 'debit', 'Expense', 'Utilities', 'Recharge', 0, 30],
+  ['VODAFONE IDEA', 'debit', 'Expense', 'Utilities', 'Recharge', 0, 30],
+  ['IRCTC', 'debit', 'Expense', 'Transport', 'Train', 0, 30],
+  ['UBER', 'debit', 'Expense', 'Transport', 'Cab', 0, 30],
+  ['OLA', 'debit', 'Expense', 'Transport', 'Cab', 0, 30],
+  ['PETROL', 'debit', 'Expense', 'Transport', 'Fuel', 0, 20],
+  ['PHARMACY', 'debit', 'Expense', 'Health', 'Pharmacy', 0, 20],
 ];
 
 function readTrackerSeed() {

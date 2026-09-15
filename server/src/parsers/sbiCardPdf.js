@@ -25,6 +25,37 @@ async function detect(buffer) {
   }
 }
 
+// The "ACCOUNT SUMMARY" box's labels (Minimum Amount Due, Total Amount Due,
+// Cash Limit, Credit Limit, Available Credit Limit, Available Cash Limit,
+// Previous Balance, Total Outstanding, Payments/Reversals/Credits,
+// Additions, Purchases & Other Debits, Fee/Taxes/Interest) and its values
+// are NOT adjacent in pdf-parse's extraction order — same non-visual-order
+// issue as the transaction blocks (see module comment). But the 9 values
+// that DO render as one contiguous run of decimal-amount lines — right after
+// the CKYC number and right before the statement-date/due-date lines —
+// reliably line up 7th/8th in that run with "Payments, Reversals & other
+// Credits" and "Purchases & Other Debits" respectively; confirmed against a
+// real statement where those two values matched the parsed credit/debit sums
+// exactly. If a future statement's layout shifts this, we can no longer
+// trust the mapping, so we refuse to guess and fail loudly instead.
+function findAccountSummaryTotals(text) {
+  const lines = text.split('\n').map((l) => l.trim());
+  const ckycIdx = lines.findIndex((l) => /^\d{10,20}$/.test(l));
+  if (ckycIdx < 0) return null;
+
+  const amounts = [];
+  let i = ckycIdx + 1;
+  while (amounts.length < 9 && i < lines.length) {
+    const line = lines[i];
+    if (line === '') { i++; continue; }
+    if (!/^[\d,]+\.\d{2}$/.test(line)) break;
+    amounts.push(parseFloat(line.replace(/,/g, '')));
+    i++;
+  }
+  if (amounts.length !== 9) return null;
+  return { paymentsReversalsCredits: amounts[6], purchasesOtherDebits: amounts[7] };
+}
+
 async function parse(buffer, { filename } = {}) {
   const data = await pdfParse(buffer);
   const text = data.text;
@@ -58,6 +89,20 @@ async function parse(buffer, { filename } = {}) {
       accountHint: { kind: 'credit_card', last4, holder: null, bank: 'SBI' },
     });
   }
+
+  const totals = findAccountSummaryTotals(text);
+  if (!totals) {
+    throw new Error('Could not find the Account Summary totals (Payments/Reversals/Credits, Purchases & Other Debits) to verify against — refusing to import, statement format may have changed');
+  }
+  const debitSum = transactions.filter((t) => t.direction === 'debit').reduce((a, t) => a + t.amount, 0);
+  const creditSum = transactions.filter((t) => t.direction === 'credit').reduce((a, t) => a + t.amount, 0);
+  if (Math.abs(creditSum - totals.paymentsReversalsCredits) > 0.01) {
+    throw new Error(`Parsed credit total (₹${creditSum.toFixed(2)}) doesn't match the statement's Payments/Reversals/Credits total (₹${totals.paymentsReversalsCredits.toFixed(2)}) — a transaction may have been missed or misread, refusing to import`);
+  }
+  if (Math.abs(debitSum - totals.purchasesOtherDebits) > 0.01) {
+    throw new Error(`Parsed debit total (₹${debitSum.toFixed(2)}) doesn't match the statement's Purchases & Other Debits total (₹${totals.purchasesOtherDebits.toFixed(2)}) — a transaction may have been missed or misread, refusing to import`);
+  }
+
   return transactions;
 }
 

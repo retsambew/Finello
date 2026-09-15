@@ -8,6 +8,7 @@ const { db, transaction } = require('./db');
 const { createBatch, getBatch, monthName } = require('./imports');
 const { merchantKey, findRule } = require('./rules');
 const { parseLedgerXlsx } = require('./parsers/ledgerXlsx');
+const { seedDatabase } = require('./seed');
 
 const PORT = process.env.PORT || 5174;
 const app = express();
@@ -47,8 +48,21 @@ app.post('/api/categories', (req, res) => {
 });
 
 app.put('/api/categories/:id', (req, res) => {
-  const { tag } = req.body;
-  db.prepare('UPDATE categories SET tag = ? WHERE id = ?').run(tag || null, req.params.id);
+  const cat = db.prepare('SELECT * FROM categories WHERE id = ?').get(req.params.id);
+  if (!cat) return res.status(404).json({ error: 'Not found' });
+  const tag = 'tag' in req.body ? req.body.tag || null : cat.tag;
+  const name = req.body.name?.trim() || cat.name;
+  try {
+    transaction(() => {
+      db.prepare('UPDATE categories SET tag = ?, name = ? WHERE id = ?').run(tag, name, cat.id);
+      if (name !== cat.name) {
+        db.prepare('UPDATE transactions SET category = ? WHERE type = ? AND category = ?').run(name, cat.type, cat.name);
+        db.prepare('UPDATE rules SET category = ? WHERE type = ? AND category = ?').run(name, cat.type, cat.name);
+      }
+    });
+  } catch {
+    return res.status(400).json({ error: `A category named "${name}" already exists for ${cat.type}` });
+  }
   res.json(getMeta());
 });
 
@@ -57,10 +71,28 @@ app.delete('/api/categories/:id', (req, res) => {
   res.json(getMeta());
 });
 
+// Usage counts (committed transactions + rules) per "type|category", for the Settings UI —
+// lets the user see what's actually in use before renaming/removing a category.
+app.get('/api/categories/usage', (req, res) => {
+  const key = (t, c) => `${t}|${c}`;
+  const usage = {};
+  for (const r of db.prepare(`SELECT type, category, COUNT(*) n FROM transactions
+      WHERE status = 'committed' AND category IS NOT NULL AND category != '' GROUP BY type, category`).all()) {
+    usage[key(r.type, r.category)] = { ...usage[key(r.type, r.category)], transactions: r.n };
+  }
+  for (const r of db.prepare(`SELECT type, category, COUNT(*) n FROM rules
+      WHERE category IS NOT NULL AND category != '' GROUP BY type, category`).all()) {
+    usage[key(r.type, r.category)] = { ...usage[key(r.type, r.category)], rules: r.n };
+  }
+  res.json(usage);
+});
+
 app.post('/api/accounts', (req, res) => {
-  const { name } = req.body;
+  const { name, identifier } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
-  db.prepare('INSERT OR IGNORE INTO accounts (name) VALUES (?)').run(name.trim());
+  // `identifier` is accepted (not just set by the statement-matching flow) so a deleted
+  // account can be recreated by Undo with its statement link intact, not just its name.
+  db.prepare('INSERT OR IGNORE INTO accounts (name, identifier) VALUES (?, ?)').run(name.trim(), identifier || null);
   res.json(getMeta());
 });
 
@@ -85,8 +117,49 @@ app.post('/api/descriptions', (req, res) => {
   res.json(getMeta());
 });
 
+// Rename a sub category everywhere it's used (the picker list, existing transactions, and
+// rules). Body-based (not /:name in the URL) so slashes/odd characters in a merchant name
+// don't get mangled by route decoding.
+app.put('/api/descriptions', (req, res) => {
+  const oldName = String(req.body.oldName || '').trim();
+  const name = String(req.body.name || '').trim();
+  if (!oldName || !name) return res.status(400).json({ error: 'Name is required' });
+  transaction(() => {
+    db.prepare('DELETE FROM descriptions WHERE name = ?').run(oldName);
+    db.prepare('INSERT OR IGNORE INTO descriptions (name) VALUES (?)').run(name);
+    db.prepare('UPDATE transactions SET description = ? WHERE description = ?').run(name, oldName);
+    db.prepare('UPDATE rules SET description = ? WHERE description = ?').run(name, oldName);
+  });
+  res.json(getMeta());
+});
+
+app.delete('/api/descriptions', (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  if (name) db.prepare('DELETE FROM descriptions WHERE name = ?').run(name);
+  res.json(getMeta());
+});
+
+// Every sub category name in use anywhere (picker list ∪ transactions ∪ rules) with usage
+// counts, for the Settings UI's "Sub categories" manager.
+app.get('/api/descriptions/detail', (req, res) => {
+  const listed = db.prepare('SELECT name FROM descriptions').all().map((r) => r.name);
+  const txnRows = db.prepare(`SELECT description name, COUNT(*) n FROM transactions
+      WHERE status = 'committed' AND description IS NOT NULL AND description != '' GROUP BY description`).all();
+  const ruleRows = db.prepare(`SELECT description name, COUNT(*) n FROM rules
+      WHERE description IS NOT NULL AND description != '' GROUP BY description`).all();
+  const txnMap = Object.fromEntries(txnRows.map((r) => [r.name, r.n]));
+  const ruleMap = Object.fromEntries(ruleRows.map((r) => [r.name, r.n]));
+  const names = new Set([...listed, ...txnRows.map((r) => r.name), ...ruleRows.map((r) => r.name)]);
+  const result = [...names].sort((a, b) => a.localeCompare(b)).map((name) => ({
+    name,
+    transactions: txnMap[name] || 0,
+    rules: ruleMap[name] || 0,
+  }));
+  res.json(result);
+});
+
 // ---------- Rules ----------
-const RULE_FIELDS = ['pattern', 'direction', 'type', 'category', 'description', 'ignore', 'priority'];
+const RULE_FIELDS = ['pattern', 'direction', 'type', 'category', 'description', 'details', 'ignore', 'priority'];
 
 function cleanRule(body) {
   return {
@@ -95,6 +168,7 @@ function cleanRule(body) {
     type: body.type || null,
     category: body.category || null,
     description: body.description || null,
+    details: body.details || null,
     ignore: body.ignore ? 1 : 0,
     priority: Number.isFinite(+body.priority) ? +body.priority : 70,
   };
@@ -107,7 +181,7 @@ app.get('/api/rules', (req, res) => {
 app.post('/api/rules', (req, res) => {
   const r = cleanRule(req.body);
   if (!r.pattern) return res.status(400).json({ error: 'Pattern is required' });
-  db.prepare(`INSERT INTO rules (${RULE_FIELDS.join(',')}) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(...RULE_FIELDS.map((f) => r[f]));
+  db.prepare(`INSERT INTO rules (${RULE_FIELDS.join(',')}) VALUES (${RULE_FIELDS.map(() => '?').join(', ')})`).run(...RULE_FIELDS.map((f) => r[f]));
   res.json(db.prepare('SELECT * FROM rules ORDER BY priority DESC, pattern').all());
 });
 
@@ -199,7 +273,7 @@ app.post('/api/imports/:id/commit', (req, res) => {
 // bypassing the staged-review flow used for raw bank/card statements.
 app.post('/api/ledger/import', upload.single('file'), wrap(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  const { rows, sheetName } = parseLedgerXlsx(req.file.buffer);
+  const { rows, sheetName, incompleteRows } = parseLedgerXlsx(req.file.buffer);
   if (!rows.length) {
     return res.status(400).json({
       error: 'No entries found. Expected a sheet with Account, Date, Type, Category and Amount columns (like this app\'s own "Entries" export).',
@@ -248,18 +322,40 @@ app.post('/api/ledger/import', upload.single('file'), wrap(async (req, res) => {
     }
     return { inserted, skipped, total: rows.length, sheetName };
   });
-  res.json(result);
+  res.json({ ...result, incompleteRows });
 }));
 
-// Wipes every transaction and staged import, keeping accounts, categories, and
-// rules intact so the ledger can be re-imported or rebuilt from scratch.
-app.post('/api/ledger/reset', (req, res) => {
+// ---------- Danger zone ----------
+
+// Deletes Categories, Sub categories, Auto-mapping rules and Accounts — everything
+// on the Settings tabs — but leaves transactions/batches untouched, so historical
+// ledger rows survive with whatever category/account text they already had, even
+// though those no longer appear in any picker.
+app.post('/api/settings/reset', (req, res) => {
+  transaction(() => {
+    db.prepare('DELETE FROM rules').run();
+    db.prepare('DELETE FROM categories').run();
+    db.prepare('DELETE FROM descriptions').run();
+    db.prepare('DELETE FROM accounts').run();
+  });
+  if (req.body?.reseed) seedDatabase(db);
+  res.json({ ok: true });
+});
+
+// Wipes everything — transactions, batches, and all Settings data — for a true
+// from-scratch start.
+app.post('/api/factory-reset', (req, res) => {
   const result = transaction(() => {
     const removed = db.prepare('SELECT COUNT(*) AS n FROM transactions').get().n;
     db.prepare('DELETE FROM transactions').run();
     db.prepare('DELETE FROM batches').run();
+    db.prepare('DELETE FROM rules').run();
+    db.prepare('DELETE FROM categories').run();
+    db.prepare('DELETE FROM descriptions').run();
+    db.prepare('DELETE FROM accounts').run();
     return { removed };
   });
+  if (req.body?.reseed) seedDatabase(db);
   res.json({ ok: true, ...result });
 });
 
@@ -279,28 +375,30 @@ function applyPatch(id, patch) {
 }
 
 // Saves (or updates) a user rule keyed on the merchant name, then applies it to
-// still-unmapped staged rows in the same import so similar rows fill in at once.
+// every other staged row in the same import that matches the same pattern —
+// including rows already marked auto_mapped, so fixing one row's mapping
+// corrects all its siblings still in review, not just the untouched ones.
 function rememberMapping(row) {
   const pattern = merchantKey(row.narration);
   if (!pattern || pattern.length < 3) return 0;
   const existing = db.prepare('SELECT * FROM rules WHERE pattern = ? AND direction IS ?').get(pattern, row.direction);
   if (existing) {
-    db.prepare('UPDATE rules SET type = ?, category = ?, description = ?, ignore = 0 WHERE id = ?')
-      .run(row.type, row.category, row.description, existing.id);
+    db.prepare('UPDATE rules SET type = ?, category = ?, description = ?, details = ?, ignore = 0 WHERE id = ?')
+      .run(row.type, row.category, row.description, row.details, existing.id);
   } else {
-    db.prepare('INSERT INTO rules (pattern, direction, type, category, description, priority) VALUES (?, ?, ?, ?, ?, 70)')
-      .run(pattern, row.direction, row.type, row.category, row.description);
+    db.prepare('INSERT INTO rules (pattern, direction, type, category, description, details, priority) VALUES (?, ?, ?, ?, ?, ?, 70)')
+      .run(pattern, row.direction, row.type, row.category, row.description, row.details);
   }
   const rules = db.prepare('SELECT * FROM rules').all();
   const candidates = db.prepare(
-    "SELECT * FROM transactions WHERE batch_id = ? AND status = 'staged' AND auto_mapped = 0 AND id != ?"
+    "SELECT * FROM transactions WHERE batch_id = ? AND status = 'staged' AND id != ?"
   ).all(row.batch_id, row.id);
-  const update = db.prepare('UPDATE transactions SET type = ?, category = ?, description = ?, auto_mapped = 1 WHERE id = ?');
+  const update = db.prepare('UPDATE transactions SET type = ?, category = ?, description = ?, details = ?, auto_mapped = 1 WHERE id = ?');
   let applied = 0;
   for (const c of candidates) {
     const rule = findRule(rules, c.narration, c.direction);
     if (rule && rule.pattern === pattern) {
-      update.run(row.type, row.category, row.description, c.id);
+      update.run(row.type, row.category, row.description, row.details, c.id);
       applied++;
     }
   }
@@ -311,7 +409,7 @@ app.patch('/api/transactions/:id', (req, res) => {
   const { remember, ...patch } = req.body;
   const result = transaction(() => {
     applyPatch(req.params.id, patch);
-    const mappingChanged = ['type', 'category', 'description'].some((f) => f in patch);
+    const mappingChanged = ['type', 'category', 'description', 'details'].some((f) => f in patch);
     if (mappingChanged) db.prepare('UPDATE transactions SET auto_mapped = 1 WHERE id = ?').run(req.params.id);
     const row = db.prepare('SELECT * FROM transactions WHERE id = ?').get(req.params.id);
     if (patch.description) db.prepare('INSERT OR IGNORE INTO descriptions (name) VALUES (?)').run(patch.description);
@@ -333,7 +431,7 @@ app.post('/api/transactions/bulk', (req, res) => {
     }
     for (const id of ids) {
       applyPatch(id, patch || {});
-      if (patch && ['type', 'category', 'description'].some((f) => f in patch)) {
+      if (patch && ['type', 'category', 'description', 'details'].some((f) => f in patch)) {
         db.prepare('UPDATE transactions SET auto_mapped = 1 WHERE id = ?').run(id);
       }
     }

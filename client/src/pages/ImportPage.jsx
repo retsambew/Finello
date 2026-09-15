@@ -5,6 +5,7 @@ import { useToast } from '../components/Toast.jsx';
 const TYPE_LABELS = {
   hdfc_savings: 'HDFC bank account',
   hdfc_card: 'HDFC credit card',
+  hdfc_card_pdf: 'HDFC credit card (PDF)',
   sbi_card_pdf: 'SBI credit card (PDF)',
 };
 
@@ -37,7 +38,11 @@ export default function ImportPage({ onOpenBatch }) {
       setFiles([]);
       onOpenBatch(batch.id);
     } catch (e) {
-      toast(e.message, 'error');
+      if (e.errors?.length) {
+        e.errors.forEach((err) => toast(`${err.file}: ${err.error}`, 'error'));
+      } else {
+        toast(e.message, 'error');
+      }
     } finally {
       setBusy(false);
     }

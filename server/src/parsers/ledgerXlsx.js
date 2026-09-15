@@ -63,6 +63,12 @@ function parseLedgerXlsx(buffer) {
   };
 
   const out = [];
+  // A hand-maintained sheet legitimately has fully blank rows between months/
+  // sections — those are silently skipped. But a row with SOME fields filled
+  // that still fails the required-field check is more likely a typo than a
+  // deliberate spacer, so those are surfaced (not blocked — bulk history
+  // import stays permissive — just made visible instead of vanishing).
+  const incompleteRows = [];
   for (let r = headerIdx + 1; r < rows.length; r++) {
     const row = rows[r];
     const account = String(row[col.account] || '').trim();
@@ -70,7 +76,11 @@ function parseLedgerXlsx(buffer) {
     const category = String(row[col.category] || '').trim();
     const date = parseCellDate(row[col.date]);
     const amount = parseAmount(row[col.amount]);
-    if (!account || !type || !date || amount === null || amount <= 0) continue; // spacer/incomplete rows
+    if (!account || !type || !date || amount === null || amount <= 0) {
+      const anyFilled = account || type || category || row[col.date] !== '' || row[col.amount] !== '';
+      if (anyFilled) incompleteRows.push({ row: r + 1, account, type, category });
+      continue;
+    }
     out.push({
       row: r,
       account,
@@ -82,7 +92,7 @@ function parseLedgerXlsx(buffer) {
       details: col.details >= 0 ? String(row[col.details] || '').trim() : '',
     });
   }
-  return { rows: out, sheetName: name };
+  return { rows: out, sheetName: name, incompleteRows };
 }
 
 module.exports = { parseLedgerXlsx };

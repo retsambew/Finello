@@ -53,6 +53,28 @@ function findCardHolderName(rows) {
   return null;
 }
 
+// Every HDFC card statement carries an "Account Summary" block ahead of the
+// transaction table: a label row ("Opening Bal | Payment / Credit |
+// Purchases / Debits | Finance Charges | Total Dues") followed immediately
+// by a value row, each value sitting in the SAME column as its label — a
+// spreadsheet cell reference, not text-extraction order, so unlike the PDF
+// statements this mapping is exact rather than a best-effort heuristic.
+function findAccountSummaryTotals(rows) {
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r].map((c) => String(c || '').trim().toLowerCase());
+    const creditCol = row.findIndex((c) => c === 'payment / credit');
+    const debitCol = row.findIndex((c) => c === 'purchases / debits');
+    if (creditCol >= 0 && debitCol >= 0 && rows[r + 1]) {
+      const paymentsCredits = parseAmount(rows[r + 1][creditCol]);
+      const purchasesDebits = parseAmount(rows[r + 1][debitCol]);
+      if (paymentsCredits !== null && purchasesDebits !== null) {
+        return { paymentsCredits, purchasesDebits };
+      }
+    }
+  }
+  return null;
+}
+
 function detect(rows) {
   return findHeaderRowIndex(rows) >= 0 && !!findCardLast4(rows);
 }
@@ -72,19 +94,19 @@ function parse(buffer, { filename } = {}) {
   const cardHolder = findCardHolderName(rows);
 
   const transactions = [];
-  let consecutiveMisses = 0;
+  // Scan every remaining row rather than bailing after a few blank/footer
+  // rows — the footer (NeuCoins/GST/loan summaries) never has anything in
+  // the date column, so it's always safely skipped without a fixed cutoff
+  // that risks truncating real transactions after an odd blank row.
   for (let r = headerIdx + 1; r < rows.length; r++) {
     const row = rows[r];
     const date = parseCardDate(row[dateCol]);
-    if (!date) {
-      consecutiveMisses += 1;
-      if (consecutiveMisses >= 3) break;
-      continue;
-    }
-    consecutiveMisses = 0;
+    if (!date) continue;
     const amount = parseAmount(row[amtCol]);
-    if (amount === null) continue;
     const narration = String(row[descCol] || '').trim();
+    if (amount === null) {
+      throw new Error(`Row ${r + 1}: found a dated transaction ("${narration}") but couldn't read its amount — refusing to import, statement format may have changed`);
+    }
     const isCredit = String(row[drCrCol] || '').trim().toLowerCase() === 'cr';
 
     transactions.push({
@@ -96,6 +118,20 @@ function parse(buffer, { filename } = {}) {
       accountHint: { kind: 'credit_card', last4: cardLast4, holder: cardHolder },
     });
   }
+
+  const totals = findAccountSummaryTotals(rows);
+  if (!totals) {
+    throw new Error('Could not find the Account Summary totals (Payment / Credit, Purchases / Debits) to verify against — refusing to import, statement format may have changed');
+  }
+  const debitSum = transactions.filter((t) => t.direction === 'debit').reduce((a, t) => a + t.amount, 0);
+  const creditSum = transactions.filter((t) => t.direction === 'credit').reduce((a, t) => a + t.amount, 0);
+  if (Math.abs(debitSum - totals.purchasesDebits) > 0.01) {
+    throw new Error(`Parsed debit total (₹${debitSum.toFixed(2)}) doesn't match the statement's Purchases / Debits total (₹${totals.purchasesDebits.toFixed(2)}) — a transaction may have been missed or misread, refusing to import`);
+  }
+  if (Math.abs(creditSum - totals.paymentsCredits) > 0.01) {
+    throw new Error(`Parsed credit total (₹${creditSum.toFixed(2)}) doesn't match the statement's Payment / Credit total (₹${totals.paymentsCredits.toFixed(2)}) — a transaction may have been missed or misread, refusing to import`);
+  }
+
   return transactions;
 }
 
