@@ -464,7 +464,12 @@ function ledgerQuery(q) {
   for (const f of ['account', 'type', 'category']) {
     if (q[f]) { where.push(`${f} = ?`); params.push(q[f]); }
   }
-  if (q.q) {
+  if (q.q && q.exact === 'true') {
+    // Whole-field match (case-insensitive), e.g. sub category "Food" but not "Fast Food".
+    const term = q.q.trim();
+    where.push('(description = ? COLLATE NOCASE OR narration = ? COLLATE NOCASE OR details = ? COLLATE NOCASE)');
+    params.push(term, term, term);
+  } else if (q.q) {
     where.push('(description LIKE ? OR narration LIKE ? OR details LIKE ?)');
     params.push(`%${q.q}%`, `%${q.q}%`, `%${q.q}%`);
   }

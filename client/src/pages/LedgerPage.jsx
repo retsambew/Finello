@@ -7,6 +7,7 @@ import Modal from '../components/Modal.jsx';
 import DateRangePicker, { defaultRange } from '../components/DateRangePicker.jsx';
 import Select from '../components/Select.jsx';
 import ComboInput from '../components/ComboInput.jsx';
+import Switch from '../components/Switch.jsx';
 
 // Recreates a deleted transaction well enough for Undo — same date/account/type/category/
 // amount/sub category/description. The statement narration and original fingerprint don't
@@ -18,7 +19,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 
 export default function LedgerPage({ meta, reloadMeta }) {
   const [months, setMonths] = useState([]);
-  const [filters, setFilters] = useState({ ...defaultRange(), account: '', type: '', category: '', q: '' });
+  const [filters, setFilters] = useState({ ...defaultRange(), account: '', type: '', category: '', q: '', exact: false });
   const [rows, setRows] = useState([]);
   const [selected, setSelected] = useState(new Set());
   const [adding, setAdding] = useState(false);
@@ -148,6 +149,12 @@ export default function LedgerPage({ meta, reloadMeta }) {
           ))}
         </Select>
         <input className="search" placeholder="Search…" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} />
+        <Switch
+          checked={filters.exact}
+          onChange={(exact) => setFilters({ ...filters, exact })}
+          label="Exact match"
+          title="Match the whole Sub category, Description or narration exactly (ignoring case), instead of anywhere inside it"
+        />
       </div>
 
       <div className="stats">
