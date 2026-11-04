@@ -22,6 +22,26 @@ delete or rewrite them; the app only ever _reads_ `Expense Tracker.xlsx`
 (once, from `sample-statements/Expense Tracker.xlsx`, to seed the database
 on first run) and never writes to it.
 
+## Public repo: no personal data, ever
+
+This repository is **public on GitHub**. Statement files, `Expense
+Tracker.xlsx`, `server/data/finello.db`, and anything the user shares in chat
+(bills, order summaries, screenshots) are real personal financial data. Use
+them **only as context** for debugging and verification — never copy anything
+from them into anything that gets committed or published:
+
+- No real amounts, dates, merchant/payee names, narrations, UPI/transaction
+  reference numbers, card or account numbers (not even last 2–4 digits),
+  names, addresses, or balances/totals.
+- This covers code, code comments, `CLAUDE.md`/docs, test fixtures, seed
+  data, commit messages, PR titles/descriptions, and issue comments.
+- When an example is needed, invent an obviously fake one (`UPI-Example Cafe`,
+  `...REF1234`, `1,500.00`, `XX99`, `Acct_Statement_XXXXXXXX1234`) that shows
+  the *shape* of the data, not its content.
+- Before committing, scan the diff for values copied from a statement or the
+  database. Never `git add` anything under `sample-statements/` or
+  `server/data/`, or personal files dropped in the repo root.
+
 ## Stack & why
 
 - **Server**: Node/Express, CommonJS. **`node:sqlite`** (Node's built-in
@@ -195,8 +215,8 @@ the _entire_ transactional region (from document start to the
 `"SAVINGS AND BENEFITS SECTION"` footer marker) and let the per-line regex
 (which requires a trailing `D`/`C` suffix) do the filtering. Also:
 `pdf-parse`'s default renderer concatenates same-line text items with no
-separator (`"05 Mar 26UPI-Example Cafe120.00D"`), so a narration ending in digits
-fuses into the amount (`...REF1234` + `1,500.00` → `12341,500.00`). The
+separator (`"05 Mar 26UPI-Example Cafe120.00D"`), so a narration ending in
+digits fuses into the amount (`...REF1234` + `1,500.00` → `12341,500.00`). The
 parser therefore passes its own `renderPage` that joins items with a tab, and
 `TXN_LINE` requires the amount to start its own tab field. Also: debits are
 checked against Purchases **plus** Fee/Taxes/Interest (EMI interest + its
