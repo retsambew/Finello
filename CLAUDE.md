@@ -194,9 +194,13 @@ locate the credit vs. debit sections separately — run one regex pass across
 the _entire_ transactional region (from document start to the
 `"SAVINGS AND BENEFITS SECTION"` footer marker) and let the per-line regex
 (which requires a trailing `D`/`C` suffix) do the filtering. Also:
-`pdf-parse` sometimes drops the space between the year and the next word
-(`"03 Jul 26UPI-HungerBox40.00D"`), so the line regex can't assume
-whitespace-delimited tokens — see `TXN_LINE` in `sbiCardPdf.js`.
+`pdf-parse`'s default renderer concatenates same-line text items with no
+separator (`"03 Jul 26UPI-HungerBox40.00D"`), so a narration ending in digits
+fuses into the amount (`...CK4604` + `12,886.11` → `460412,886.11`). The
+parser therefore passes its own `renderPage` that joins items with a tab, and
+`TXN_LINE` requires the amount to start its own tab field. Also: debits are
+checked against Purchases **plus** Fee/Taxes/Interest (EMI interest + its
+undated `IGST` line, which inherits the date of the line above).
 
 ### Gotcha: SheetJS column indices are relative to the sheet's `!ref`, not column A
 
