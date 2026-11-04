@@ -40,17 +40,33 @@ export default function ReviewPage({ batchId, meta, reloadMeta, onPickBatch, onD
     else api.get('/api/imports').then(setPending);
   }, [batchId, load]);
 
-  const rows = useMemo(() => {
-    if (!batch) return [];
+  const matchesFilter = useCallback((r) => {
     const q = search.trim().toLowerCase();
-    return batch.rows.filter((r) => {
-      if (filter === 'review' && r.auto_mapped) return false;
-      if (filter === 'dup' && !r.is_duplicate) return false;
-      if (filter === 'excluded' && r.include_row) return false;
-      if (q && ![r.narration, r.description, r.details, r.category, r.account].some((v) => v?.toLowerCase().includes(q))) return false;
-      return true;
-    });
-  }, [batch, filter, search]);
+    if (filter === 'review' && r.auto_mapped) return false;
+    if (filter === 'dup' && !r.is_duplicate) return false;
+    if (filter === 'excluded' && r.include_row) return false;
+    if (q && ![r.narration, r.description, r.details, r.category, r.account].some((v) => v?.toLowerCase().includes(q))) return false;
+    return true;
+  }, [filter, search]);
+
+  // Which rows are shown is snapshotted when the filter/search is applied (or a
+  // filter chip is clicked again), not re-evaluated on every edit — otherwise a
+  // row vanishes from "Needs review" the moment you fix its category, mid-edit.
+  // Rows still show their live data; they just don't drop out until a re-filter.
+  const [refilterTick, setRefilterTick] = useState(0);
+  const snapshotKey = batch ? `${batch.id}|${filter}|${search}|${refilterTick}` : null;
+  const [snapshot, setSnapshot] = useState({ key: null, ids: new Set() });
+  let shownIds = snapshot.ids;
+  if (batch && snapshot.key !== snapshotKey) {
+    shownIds = new Set(batch.rows.filter(matchesFilter).map((r) => r.id));
+    setSnapshot({ key: snapshotKey, ids: shownIds });
+  }
+
+  const rows = useMemo(
+    () => (batch ? batch.rows.filter((r) => shownIds.has(r.id)) : []),
+    [batch, shownIds]
+  );
+  const staleCount = rows.filter((r) => !matchesFilter(r)).length;
 
   if (!batchId) {
     return (
@@ -216,11 +232,20 @@ export default function ReviewPage({ batchId, meta, reloadMeta, onPickBatch, onD
       <div className="toolbar sticky">
         <div className="chips">
           {FILTERS.map(([k, label]) => (
-            <button key={k} className={filter === k ? 'chip active' : 'chip'} onClick={() => setFilter(k)}>
+            <button
+              key={k}
+              className={filter === k ? 'chip active' : 'chip'}
+              onClick={() => { setFilter(k); setRefilterTick((t) => t + 1); }}
+            >
               {label}
             </button>
           ))}
         </div>
+        {staleCount > 0 && (
+          <button className="btn small ghost" onClick={() => setRefilterTick((t) => t + 1)}>
+            {staleCount} row{staleCount === 1 ? '' : 's'} no longer match{staleCount === 1 ? 'es' : ''} — refresh
+          </button>
+        )}
         <input className="search" placeholder="Search narration, sub category, description…" value={search} onChange={(e) => setSearch(e.target.value)} />
         <Switch
           className="right"

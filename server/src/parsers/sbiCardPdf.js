@@ -5,9 +5,33 @@ const MONTHS = {
   jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
 };
 
-// Matches lines like: "05 Mar 26 UPI-Example Cafe 120.00 D" or the no-space
-// variant pdf-parse sometimes emits: "05 Mar 26UPI-Example Cafe120.00D"
-const TXN_LINE = /(\d{2})\s+([A-Za-z]{3})\s+(\d{2,4})\s*(.+?)\s*([\d,]+\.\d{2})\s*([DC])\s*$/;
+// pdf-parse's default renderer concatenates text items on the same line with
+// no separator, so a narration ending in digits (e.g. a UPI ref "...REF1234")
+// fused with the amount ("1,500.00") into one bogus number. renderPage joins
+// same-line items with a tab instead, so the amount is always its own
+// tab-delimited field. Otherwise identical to pdf-parse's default render_page.
+function renderPage(pageData) {
+  return pageData.getTextContent({ normalizeWhitespace: false, disableCombineTextItems: false })
+    .then((textContent) => {
+      let lastY;
+      let text = '';
+      for (const item of textContent.items) {
+        const y = item.transform[5];
+        if (lastY === y || lastY === undefined) text += (text ? '\t' : '') + item.str;
+        else text += '\n' + item.str;
+        lastY = y;
+      }
+      return text;
+    });
+}
+
+// Matches lines like: "05 Mar 26\tUPI-Example Cafe\t120.00\tD". The amount must
+// start its own tab-delimited field (see renderPage).
+const TXN_LINE = /^(\d{2})\s+([A-Za-z]{3})\s+(\d{2,4})\s*(.+?)\t\s*([\d,]+\.\d{2})\s*\t?\s*([DC])\s*$/;
+// Undated charge printed directly under a dated one, e.g. the GST on EMI
+// interest: "IGST DB @ 18.00%\t9.00\tD" right below
+// "05 Mar 26\tINTEREST ON EMI\t50.00\tD". Takes the date of the line above.
+const UNDATED_LINE = /^([^\t]+?)\t\s*([\d,]+\.\d{2})\s*\t?\s*([DC])\s*$/;
 
 function toIsoDate(dd, mon, yy) {
   const mm = MONTHS[mon.toLowerCase()];
@@ -36,7 +60,9 @@ async function detect(buffer) {
 // reliably line up 7th/8th in that run with "Payments, Reversals & other
 // Credits" and "Purchases & Other Debits" respectively; confirmed against a
 // real statement where those two values matched the parsed credit/debit sums
-// exactly. If a future statement's layout shifts this, we can no longer
+// exactly. The 9th is "Fee, Taxes & Interest Charges" (e.g. EMI interest and
+// its GST), which appear as D lines too but aren't counted under Purchases.
+// If a future statement's layout shifts this, we can no longer
 // trust the mapping, so we refuse to guess and fail loudly instead.
 function findAccountSummaryTotals(text) {
   const lines = text.split('\n').map((l) => l.trim());
@@ -53,11 +79,11 @@ function findAccountSummaryTotals(text) {
     i++;
   }
   if (amounts.length !== 9) return null;
-  return { paymentsReversalsCredits: amounts[6], purchasesOtherDebits: amounts[7] };
+  return { paymentsReversalsCredits: amounts[6], purchasesOtherDebits: amounts[7], feesTaxesInterest: amounts[8] };
 }
 
 async function parse(buffer, { filename } = {}) {
-  const data = await pdfParse(buffer);
+  const data = await pdfParse(buffer, { pagerender: renderPage });
   const text = data.text;
 
   // Credits and debits are listed in separate blocks, and pdf-parse doesn't keep
@@ -71,11 +97,19 @@ async function parse(buffer, { filename } = {}) {
 
   const lines = body.split('\n');
   const transactions = [];
+  let prevDate = null;
   for (const line of lines) {
     const m = line.match(TXN_LINE);
-    if (!m) continue;
-    const [, dd, mon, yy, narration, amountStr, drCr] = m;
-    const date = toIsoDate(dd, mon, yy);
+    const u = !m && prevDate ? line.match(UNDATED_LINE) : null;
+    let date = null, narration, amountStr, drCr;
+    if (m) {
+      date = toIsoDate(m[1], m[2], m[3]);
+      [, , , , narration, amountStr, drCr] = m;
+    } else if (u) {
+      date = prevDate;
+      [, narration, amountStr, drCr] = u;
+    }
+    prevDate = m ? date : null;
     if (!date) continue;
     const amount = parseFloat(amountStr.replace(/,/g, ''));
     if (isNaN(amount)) continue;
@@ -99,8 +133,9 @@ async function parse(buffer, { filename } = {}) {
   if (Math.abs(creditSum - totals.paymentsReversalsCredits) > 0.01) {
     throw new Error(`Parsed credit total (₹${creditSum.toFixed(2)}) doesn't match the statement's Payments/Reversals/Credits total (₹${totals.paymentsReversalsCredits.toFixed(2)}) — a transaction may have been missed or misread, refusing to import`);
   }
-  if (Math.abs(debitSum - totals.purchasesOtherDebits) > 0.01) {
-    throw new Error(`Parsed debit total (₹${debitSum.toFixed(2)}) doesn't match the statement's Purchases & Other Debits total (₹${totals.purchasesOtherDebits.toFixed(2)}) — a transaction may have been missed or misread, refusing to import`);
+  const expectedDebits = totals.purchasesOtherDebits + totals.feesTaxesInterest;
+  if (Math.abs(debitSum - expectedDebits) > 0.01) {
+    throw new Error(`Parsed debit total (₹${debitSum.toFixed(2)}) doesn't match the statement's Purchases & Other Debits + Fee/Taxes/Interest total (₹${expectedDebits.toFixed(2)}) — a transaction may have been missed or misread, refusing to import`);
   }
 
   return transactions;

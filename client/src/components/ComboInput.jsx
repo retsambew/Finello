@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useAnchorRect, useDismiss } from './floating.js';
+import { panelStyle, useAnchorRect, useDismiss } from './floating.js';
 
 // Text input with a styled floating panel of matching options: pick any previous
 // value, or type a new one. Commits on blur / Enter; `onCreate` fires for unseen
@@ -85,7 +85,7 @@ export default function ComboInput({ value, options, onCommit, onCreate, placeho
         <div
           ref={panelRef}
           className="select-panel combo-panel"
-          style={{ top: rect.bottom + 4, left: rect.left, minWidth: rect.width }}
+          style={panelStyle(rect)}
         >
           {matches.map((o, i) => (
             <div

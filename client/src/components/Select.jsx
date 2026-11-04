@@ -1,6 +1,6 @@
 import { Children, useCallback, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useAnchorRect, useDismiss } from './floating.js';
+import { panelStyle, useAnchorRect, useDismiss } from './floating.js';
 
 // Drop-in replacement for a native <select>: same value/onChange({target:{value}})
 // contract and plain <option> children, but with a styled floating panel instead of
@@ -77,7 +77,7 @@ export default function Select({ value, onChange, children, className = '', disa
         <div
           ref={panelRef}
           className="select-panel"
-          style={{ top: rect.bottom + 4, left: rect.left, minWidth: rect.width }}
+          style={panelStyle(rect)}
         >
           {options.map((o, i) => (
             <div
