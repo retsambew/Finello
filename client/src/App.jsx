@@ -3,6 +3,7 @@ import { api } from './api.js';
 import ImportPage from './pages/ImportPage.jsx';
 import ReviewPage from './pages/ReviewPage.jsx';
 import LedgerPage from './pages/LedgerPage.jsx';
+import AnalysisPage from './pages/AnalysisPage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import { ToastProvider } from './components/Toast.jsx';
 
@@ -10,6 +11,7 @@ const TABS = [
   ['import', 'Import'],
   ['review', 'Review'],
   ['ledger', 'Ledger'],
+  ['analysis', 'Analysis'],
   ['settings', 'Settings'],
 ];
 
@@ -61,6 +63,8 @@ export default function App() {
             />
           ) : tab === 'ledger' ? (
             <LedgerPage meta={meta} reloadMeta={reloadMeta} />
+          ) : tab === 'analysis' ? (
+            <AnalysisPage meta={meta} />
           ) : (
             <SettingsPage meta={meta} reloadMeta={reloadMeta} />
           )}
