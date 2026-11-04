@@ -81,7 +81,7 @@ input:focus, select:focus { outline: 2px solid var(--primary); outline-offset: -
 .select-panel {
   position: fixed; z-index: 200; background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: 0 16px 40px rgba(0, 0, 0, .28); padding: 4px;
-  max-height: 280px; overflow-y: auto; min-width: 120px;
+  max-height: 280px; overflow-y: auto; overscroll-behavior: contain; min-width: 120px;
 }
 .select-option {
   padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 14px;
